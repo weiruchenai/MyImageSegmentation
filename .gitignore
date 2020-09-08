@@ -1,0 +1,10 @@
+*.pyc
+data/
+__pycache__/
+checkpoints_polyp/
+checkpoints_cars/
+*.jpg
+*.pth
+runs/
+SUBMISSION*
+venv/
