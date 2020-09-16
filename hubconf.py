@@ -1,5 +1,5 @@
 import torch
-from unet import UNet as _UNet
+from networks import UNet as _UNet
 
 
 def unet_carvana(pretrained=False):

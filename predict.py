@@ -8,12 +8,13 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-from unet import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet
+from networks import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, ResUnetPlusPlus, PraNet
 from utils.data_vis import plot_img_and_mask
 from utils.dataset import BasicDataset
 
 
 def predict_img(net,
+                network_name,
                 full_img,
                 device,
                 scale_factor=1,
@@ -26,7 +27,10 @@ def predict_img(net,
     img = img.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        output = net(img)
+        if network_name == 'PraNet':
+            output4, output3, output2, output = net(img)
+        else:
+            output = net(img)
 
         if net.n_classes > 1:
             probs = F.softmax(output, dim=1)
@@ -52,18 +56,22 @@ def predict_img(net,
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--model', '-m', default='./checkpoints_polyp/CP_epoch5.pth',
+    parser.add_argument('--model', '-m', default='./param_initial/PraNet-29.pth',
                         metavar='FILE',
                         help="Specify the file in which the model is stored")
-    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', default='./data/polyp/pred/521.png',
-                        help='filenames of input images')
+    parser.add_argument('-n', '--network', metavar='N', type=str, default="PraNet",
+                        help='choice of network: UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, '
+                             'ResUnetPlusPlus, PraNet', dest='network')
 
-    parser.add_argument('--output', '-o', metavar='INPUT', nargs='+', default='./data/polyp/pout/521_nested_unet.png',
+    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pred/604.png',
+                        help='filenames of input images')
+    parser.add_argument('--output', '-o', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pred/604_PraNet.png',
                         help='Filenames of ouput images')
+
     parser.add_argument('--viz', '-v', action='store_true',
                         help="Visualize the images as they are processed",
                         default=True)
-    parser.add_argument('--no-save', '-n', action='store_true',
+    parser.add_argument('--no-save', '-ns', action='store_true',
                         help="Do not save the output masks",
                         default=False)
     parser.add_argument('--mask-threshold', '-t', type=float,
@@ -102,12 +110,21 @@ if __name__ == "__main__":
     in_files = [args.input]
     out_files = get_output_filenames(args)
 
-    # net = UNet(n_channels=3, n_classes=1, bilinear=False)
-    # net = U_Net(n_channels=3, n_classes=1, bilinear=False)
-    # net = R2U_Net(n_channels=3, n_classes=1, bilinear=False)
-    # net = AttU_Net(n_channels=3, n_classes=1, bilinear=False)
-    net = NestedUNet(n_channels=3, n_classes=1, bilinear=False)
-    # net = R2AttU_Net(n_classes=3, n_channels=1, bilinear=False)
+    if args.network == 'U_net':
+        # net = UNet(n_channels=3, n_classes=1, bilinear=False)
+        net = U_Net(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'R2U_Net':
+        net = R2U_Net(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'AttU_Net':
+        net = AttU_Net(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'R2AttU_Net':
+        net = R2AttU_Net(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'NestedUNet':
+        net = NestedUNet(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'ResUnetPlusPlus':
+        net = ResUnetPlusPlus(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'PraNet':
+        net = PraNet(n_channels=3, n_classes=1, bilinear=False)
 
     logging.info("Loading model {}".format(args.model))
 
@@ -124,6 +141,7 @@ if __name__ == "__main__":
         img = Image.open(fn)
 
         mask = predict_img(net=net,
+                           network_name=args.network,
                            full_img=img,
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,

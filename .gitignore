@@ -1,7 +1,7 @@
 *.pyc
 data/
 __pycache__/
-checkpoints_polyp/
+checkpoints_CVCpolyp/
 checkpoints_cars/
 *.pth
 runs/
