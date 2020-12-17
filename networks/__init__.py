@@ -6,3 +6,4 @@ from .R2_Atten_R2Atten import R2AttU_Net
 from .nested_unet import NestedUNet
 from .res_unet_plus import ResUnetPlusPlus
 from .PraNet_Res2Net import PraNet
+from .PraNet_plus_plus_Res2Net import PraNet_plus_plus

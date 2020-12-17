@@ -12,11 +12,13 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from eval import eval_net
-from networks import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, ResUnetPlusPlus, PraNet
+from networks import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, ResUnetPlusPlus, PraNet, PraNet_plus_plus
 
 from torch.utils.tensorboard import SummaryWriter
-from utils.dataset import BasicDataset
-from utils.utils import Structure_loss
+from utils.dataset import PolypDataset
+from utils.losses_pytorch.dice_loss import GDiceLoss
+
+from utils.utils import Structure_loss, DiceLoss, clip_gradient
 from torch.utils.data import DataLoader, random_split
 
 # os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
@@ -43,13 +45,14 @@ def train_net(net,
               val_percent=0.1,
               save_cp=True,
               img_scale=0.5):
-    dataset = BasicDataset(dir_img, dir_mask, img_scale, mask_suffix="")
+    # dataset = BasicDataset(dir_img, dir_mask, img_scale, mask_suffix="")
+    dataset = PolypDataset(dir_img, dir_mask)
     n_val = int(len(dataset) * val_percent)  # 验证集图像个数
     n_train = len(dataset) - n_val  # 训练集图像个数
     train, val = random_split(dataset, [n_train, n_val])  # 根据大小。划分训练集与验证集
     # 加载训练集与验证集，获取一个批次的数据
-    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, drop_last=True)
+    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
     # tensorboard
     writer = SummaryWriter(comment=f'_BS={batch_size}_Epoch={epochs}')
     global_step = 0
@@ -75,6 +78,7 @@ def train_net(net,
     else:
         # criterion = nn.BCEWithLogitsLoss()
         criterion = Structure_loss()
+        # criterion = DiceLoss()
 
     for epoch in range(epochs):
         net.train()
@@ -91,67 +95,77 @@ def train_net(net,
                         f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
                         'the images are loaded correctly.'
 
-                    # rescale
-                    new_height = int(round(192*rate/32)*32)
-                    new_width = int(round(256*rate/32)*32)
+                    imgs = imgs.to(device=device, dtype=torch.float32)
+                    mask_type = torch.float32 if net.n_classes == 1 else torch.long
+                    true_masks = true_masks.to(device=device, dtype=mask_type)
+
+                    # 根据rate的值进行rescale
+                    h, w = imgs.shape[2], imgs.shape[3]
+                    new_height = int(round(h*rate/32)*32)
+                    new_width = int(round(w*rate/32)*32)
+
                     if rate != 1:
                         imgs = F.upsample(imgs, size=(new_height, new_width), mode='bilinear', align_corners=True)
                         true_masks = F.upsample(true_masks, size=(new_height, new_width), mode='bilinear', align_corners=True)
 
-                    imgs = imgs.to(device=device, dtype=torch.float32)
-                    mask_type = torch.float32 if net.n_classes == 1 else torch.long
-                    true_masks = true_masks.to(device=device, dtype=mask_type)
                     # 获得输出并计算损失,PraNet的损失计算方式不同，这里有所区分
-                    if network_name == 'PraNet':
+                    if network_name == 'PraNet_plus' or network_name == 'PraNet_plus_plus':
                         masks_pred_4, masks_pred_3, masks_pred_2, masks_pred = net(imgs)
                         loss5 = criterion(masks_pred_4, true_masks)
                         loss4 = criterion(masks_pred_3, true_masks)
                         loss3 = criterion(masks_pred_2, true_masks)
                         loss2 = criterion(masks_pred, true_masks)
                         loss = loss2 + loss3 + loss4 + loss5
+                        # 仅记录loss2的损失
+                        writer.add_scalar('Loss/train', loss2.item(), global_step)
+                        pbar.set_postfix(**{'loss (batch)': loss2.item()})
                     else:
                         masks_pred = net(imgs)
                         loss = criterion(masks_pred, true_masks)
-                    epoch_loss += loss.item()
-                    writer.add_scalar('Loss/train', loss.item(), global_step)
 
-                    pbar.set_postfix(**{'loss (batch)': loss.item()})
+                        writer.add_scalar('Loss/train', loss.item(), global_step)
+                        pbar.set_postfix(**{'loss (batch)': loss.item()})
+
+                    epoch_loss += loss.item()
                     # 执行梯度下降更新权重
                     optimizer.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_value_(net.parameters(), 0.1)
+                    nn.utils.clip_grad_value_(net.parameters(), 0.5)
+                    # clip_gradient(optimizer, 0.5)
                     optimizer.step()
 
+                    temp = imgs.shape[0]
                     pbar.update(imgs.shape[0])
                     global_step += 1
                 if global_step % (n_train // (10 * batch_size)) == 0:
-                    '''for tag, value in net.named_parameters():
-                        tag = tag.replace('.', '/')
-                        writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                        writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                    '''
+                    if network_name != 'PraNet_plus' and network_name != 'PraNet_plus_plus':
+                        for tag, value in net.named_parameters():
+                            tag = tag.replace('.', '/')
+                            writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
+                            writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
+
                     # 验证集测试的dice分数
                     # train_score = eval_net(net, train_loader, device, network_name)
-                    val_score = eval_net(net, val_loader, device, network_name)
-                    scheduler.step(val_score)
+                    dice_score = eval_net(net, val_loader, device, network_name)
+                    scheduler.step(dice_score)
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
                     if net.n_classes > 1:
-                        logging.info('Validation cross entropy: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
+                        logging.info('Validation cross entropy: {}'.format(dice_score))
+                        writer.add_scalar('Loss/test', dice_score, global_step)
                     else:
                         print(" ")
                         # logging.info('Training Dice Coeff: {}'.format(train_score))
-                        logging.info('Validation Dice Coeff: {}'.format(val_score))
+                        logging.info('Validation Dice Coeff: {}'.format(dice_score))
                         print(" ")
-                        writer.add_scalar('Dice/test', val_score, global_step)
+                        writer.add_scalar('Dice/test', dice_score, global_step)
 
                     writer.add_images('images', imgs, global_step)
                     if net.n_classes == 1:
                         writer.add_images('masks/true', true_masks, global_step)
-                        writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
+                        writer.add_images('masks/predict', torch.sigmoid(masks_pred) > 0.5, global_step)
 
-        if save_cp:
+        if save_cp & (epoch+1) % 5 == 0:
             try:
                 os.mkdir(dir_checkpoint)
                 logging.info('Created checkpoint directory')
@@ -168,10 +182,10 @@ def train_net(net,
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-n', '--network', metavar='N', type=str, default="NestedUNet",
-                        help='choice of network: UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, '
-                             'ResUnetPlusPlus, PraNet', dest='network')
-    parser.add_argument('-e', '--epochs', metavar='E', type=str, default=8,
+    parser.add_argument('-n', '--network', metavar='N', type=str, default="PraNet_plus_plus",
+                        help='choice of network: U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, '
+                             'ResUnetPlusPlus, PraNet_plus, PraNet_plus_plus', dest='network')
+    parser.add_argument('-e', '--epochs', metavar='E', type=str, default=10,
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=4,
                         help='Batch size', dest='batchsize')
@@ -179,11 +193,10 @@ def get_args():
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
-    parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5,
-                        help='Downscaling factor of the images')
     parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
-
+    parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5,
+                        help='Downscaling factor of the images')
     return parser.parse_args()
 
 
@@ -202,7 +215,7 @@ if __name__ == '__main__':
     #   - For 2 classes, use n_classes=1
     #   - For N > 2 classes, use n_classes=N
     # 选择想要训练的网络
-    if args.network == 'U_net':
+    if args.network == 'U_Net':
         # net = UNet(n_channels=3, n_classes=1, bilinear=False)
         net = U_Net(n_channels=3, n_classes=1, bilinear=False)
     if args.network == 'R2U_Net':
@@ -215,8 +228,10 @@ if __name__ == '__main__':
         net = NestedUNet(n_channels=3, n_classes=1, bilinear=False)
     if args.network == 'ResUnetPlusPlus':
         net = ResUnetPlusPlus(n_channels=3, n_classes=1, bilinear=False)
-    if args.network == 'PraNet':
+    if args.network == 'PraNet_plus':
         net = PraNet(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'PraNet_plus_plus':
+        net = PraNet_plus_plus(n_channels=3, n_classes=1, bilinear=False)
 
     logging.info(f'Network:\t{args.network}\n'
                  f'\t{net.n_channels} input channels\n'

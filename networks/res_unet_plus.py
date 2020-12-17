@@ -201,12 +201,12 @@ class AttentionBlock(nn.Module):
     def __init__(self, input_encoder, input_decoder, output_dim):
         super(AttentionBlock, self).__init__()
 
-        self.conv_encoder = nn.Sequential(
-            nn.BatchNorm2d(input_encoder),
-            nn.ReLU(),
-            nn.Conv2d(input_encoder, output_dim, 3, padding=1),
-            nn.MaxPool2d(2, 2),
-        )
+        # self.conv_encoder = nn.Sequential(
+        #     nn.BatchNorm2d(input_encoder),
+        #     nn.ReLU(),
+        #     nn.Conv2d(input_encoder, output_dim, 3, padding=1),
+        #     nn.MaxPool2d(2, 2),
+        # )
 
         self.conv_decoder = nn.Sequential(
             nn.BatchNorm2d(input_decoder),

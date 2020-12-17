@@ -1,74 +1,142 @@
-from os.path import splitext
-from os import listdir
-import numpy as np
-from glob import glob
-import torch
-from torch.utils.data import Dataset
+import os
+from torch.utils.data import Dataset, DataLoader
 import logging
 from PIL import Image
+import torchvision.transforms as transforms
+
+from utils.utils import test_loader
 
 
-class BasicDataset(Dataset):
-    # 构造函数，声明基本信息，图片文件夹，mask文件夹
-    def __init__(self, imgs_dir, masks_dir, scale=1, mask_suffix=''):
-        self.imgs_dir = imgs_dir
-        self.masks_dir = masks_dir
-        self.scale = scale
-        self.mask_suffix = mask_suffix
-        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+class PolypDataset(Dataset):
+    """
+    dataloader for polyp segmentation tasks
+    """
 
-        self.ids = [splitext(file)[0] for file in listdir(imgs_dir)
-                    if not file.startswith('.')]
-        logging.info(f'Creating dataset with {len(self.ids)} examples')
+    def __init__(self, imgs_dir, masks_dir, transize=256):
+        self.transize = transize
+        self.images = [imgs_dir + f for f in os.listdir(imgs_dir) if f.endswith('.jpg') or f.endswith('.png') or f.endswith('.tif')]
+        self.masks = [masks_dir + f for f in os.listdir(masks_dir) if f.endswith('.png') or f.endswith('.gif')]
+        self.images = sorted(self.images)
+        self.masks = sorted(self.masks)
+        self.filter_files()
+        self.size = len(self.images)
 
-    def __len__(self):
-        return len(self.ids)
+    def __getitem__(self, index):
+        image = self.rgb_loader(self.images[index])
+        mask = self.binary_loader(self.masks[index])
 
-    @classmethod
-    def preprocess(cls, pil_img, scale):
-        w, h = pil_img.size
+        # transform中进行resize时保留原本比例
+        w, h = image.size
         aspect_ratio = h / w
-        # newW, newH = int(scale * w), int(scale * h)
-        # assert newW > 0 and newH > 0, 'Scale is too small'
-        # pil_img = pil_img.resize((newW, newH))
-        pil_img = pil_img.resize((256, int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16))
+        img_transform = transforms.Compose([
+            transforms.Resize(((int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16), 256)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])])
+        mask_transform = transforms.Compose([
+            transforms.Resize(((int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16), 256)),
+            transforms.ToTensor()])
 
-        img_nd = np.array(pil_img)
-
-        if len(img_nd.shape) == 2:
-            img_nd = np.expand_dims(img_nd, axis=2)
-
-        # HWC to CHW
-        img_trans = img_nd.transpose((2, 0, 1))
-        if img_trans.max() > 1:
-            img_trans = img_trans / 255
-
-        return img_trans
-
-    def __getitem__(self, i):
-        idx = self.ids[i]
-        mask_file = glob(self.masks_dir + idx + self.mask_suffix + '.*')
-        img_file = glob(self.imgs_dir + idx + '.*')
-
-        assert len(mask_file) == 1, \
-            f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
-        assert len(img_file) == 1, \
-            f'Either no image or multiple images found for the ID {idx}: {img_file}'
-        mask = Image.open(mask_file[0])
-        img = Image.open(img_file[0])
-
-        assert img.size == mask.size, \
-            f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
-
-        img = self.preprocess(img, self.scale)
-        mask = self.preprocess(mask, self.scale)
-
+        image = img_transform(image)
+        mask = mask_transform(mask)
         return {
-            'image': torch.from_numpy(img).type(torch.FloatTensor),
-            'mask': torch.from_numpy(mask).type(torch.FloatTensor)
+            'image': image,
+            'mask': mask
         }
 
+    @classmethod
+    def preprocess(cls, pil_img):
+        image = test_loader(pil_img)
 
-class CarvanaDataset(BasicDataset):
-    def __init__(self, imgs_dir, masks_dir, scale=1):
-        super().__init__(imgs_dir, masks_dir, scale, mask_suffix='_mask')
+        # transform中进行resize时保留原本比例
+        w, h = image.size
+        aspect_ratio = h / w
+        img_transform = transforms.Compose([
+            transforms.Resize(((int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16), 256)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])])
+
+        image = img_transform(image)
+        return image
+
+    def filter_files(self):
+        assert len(self.images) == len(self.masks)
+        images = []
+        masks = []
+        for img_path, mask_path in zip(self.images, self.masks):
+            img = Image.open(img_path)
+            mask = Image.open(mask_path)
+            if img.size == mask.size:
+                images.append(img_path)
+                masks.append(mask_path)
+        self.images = images
+        self.masks = masks
+
+    def rgb_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('RGB')
+
+    def binary_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            # return img.convert('1')
+            return img.convert('L')
+
+    def resize(self, img, mask):
+        assert img.size == mask.size
+        w, h = img.size
+        if h < self.transize or w < self.transize:
+            h = max(h, self.transize)
+            w = max(w, self.transize)
+            return img.resize((w, h), Image.BILINEAR), mask.resize((w, h), Image.NEAREST)
+        else:
+            return img, mask
+
+    def __len__(self):
+        return self.size
+
+
+class test_dataset:
+    def __init__(self, imgs_dir, masks_dir, transize=256):
+        self.transize = transize
+        self.images = [imgs_dir + f for f in os.listdir(imgs_dir) if f.endswith('.jpg') or f.endswith('.png')]
+        self.gts = [masks_dir + f for f in os.listdir(masks_dir) if f.endswith('.tif') or f.endswith('.png')]
+        self.images = sorted(self.images)
+        self.gts = sorted(self.gts)
+        self.gt_transform = transforms.ToTensor()
+        self.size = len(self.images)
+        self.index = 0
+
+    def load_data(self):
+        image = self.rgb_loader(self.images[self.index])
+        mask = self.binary_loader(self.gts[self.index])
+        # transform中进行resize时保留原本比例
+        w, h = image.size
+        aspect_ratio = h / w
+        img_transform = transforms.Compose([
+            transforms.Resize(((int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16), 256)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],
+                                 [0.229, 0.224, 0.225])])
+        mask_transform = transforms.Compose([
+            transforms.Resize(((int(256 * aspect_ratio) - int(256 * aspect_ratio) % 16), 256)),
+            transforms.ToTensor()])
+        image = img_transform(image)
+        mask = mask_transform(mask)
+        name = self.images[self.index].split('/')[-1]
+        if name.endswith('.jpg'):
+            name = name.split('.jpg')[0] + '.png'
+        self.index += 1
+        return image, mask, name
+
+    def rgb_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('RGB')
+
+    def binary_loader(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('L')

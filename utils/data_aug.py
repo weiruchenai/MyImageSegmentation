@@ -3,10 +3,10 @@ import cv2
 import PIL
 from imgaug import augmenters as iaa
 
-original_imgs_dir = "../data/polyp/imgs/"
-original_masks_dir = "../data/polyp/masks/"
-aug_imgs_dir = "../data/polyp/augment/imgs/"
-aug_masks_dir = "../data/polyp/augment/masks/"
+original_imgs_dir = "../data/CVCpolyp/imgs/"
+original_masks_dir = "../data/CVCpolyp/masks/"
+aug_imgs_dir = "../data/CVCpolyp/augment/imgs/"
+aug_masks_dir = "../data/CVCpolyp/augment/masks/"
 
 original_imgs = os.listdir(original_imgs_dir)
 original_masks = os.listdir(original_masks_dir)

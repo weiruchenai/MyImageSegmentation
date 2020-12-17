@@ -10,7 +10,8 @@ def eval_net(net, loader, device, network_name):
     net.eval()
     mask_type = torch.float32 if net.n_classes == 1 else torch.long
     n_val = len(loader)  # the number of batch
-    tot = 0
+    tot_dice = 0
+    tot_meanIou = 0
 
     with tqdm(total=n_val, desc='Validation round', unit='batch', leave=False) as pbar:
         for batch in loader:
@@ -19,18 +20,18 @@ def eval_net(net, loader, device, network_name):
             true_masks = true_masks.to(device=device, dtype=mask_type)
 
             with torch.no_grad():
-                if network_name == 'PraNet':
+                if network_name == 'PraNet_plus' or network_name == 'PraNet_plus_plus':
                     masks_pred_4, masks_pred_3, masks_pred_2, masks_pred = net(imgs)
                 else:
                     masks_pred = net(imgs)
 
             if net.n_classes > 1:
-                tot += F.cross_entropy(masks_pred, true_masks).item()
+                tot_dice += F.cross_entropy(masks_pred, true_masks).item()
             else:
                 pred = torch.sigmoid(masks_pred)
                 pred = (pred > 0.5).float()
-                tot += dice_coeff(pred, true_masks).item()
+                tot_dice += dice_coeff(pred, true_masks).item()
             pbar.update()
 
     net.train()
-    return tot / n_val
+    return tot_dice / n_val

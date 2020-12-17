@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .Res2Net_v1b import res2net50_v1b_26w_4s
+from .res_unet_plus import ASPP, Squeeze_Excite_Block
 
 
 class BasicConv2d(nn.Module):
@@ -104,10 +105,17 @@ class PraNet(nn.Module):
         self.bilinear = bilinear
         # ---- ResNet Backbone ----
         self.resnet = res2net50_v1b_26w_4s(pretrained=False)
+        # ---- Squeeze&Excited module ----
+        self.squeeze_excite0 = Squeeze_Excite_Block(64)
+        self.squeeze_excite1 = Squeeze_Excite_Block(256)
+        self.squeeze_excite2 = Squeeze_Excite_Block(512)
+        self.squeeze_excite3 = Squeeze_Excite_Block(1024)
+        self.squeeze_excite4 = Squeeze_Excite_Block(2048)
         # ---- Receptive Field Block like module ----
         self.rfb2_1 = RFB_modified(512, channel)
         self.rfb3_1 = RFB_modified(1024, channel)
         self.rfb4_1 = RFB_modified(2048, channel)
+        self.aspp_bridge = ASPP(32, 32)  # x4_rfb=[4,32,4,6],channel数为32
         # ---- Partial Decoder ----
         self.agg1 = aggregation(channel)
         # ---- reverse attention branch 4 ----
@@ -132,15 +140,24 @@ class PraNet(nn.Module):
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)
         x = self.resnet.maxpool(x)      # bs, 64, 88, 88
+        x = self.squeeze_excite0(x)
         # ---- low-level features ----
         x1 = self.resnet.layer1(x)      # bs, 256, 88, 88
+        x1 = self.squeeze_excite1(x1)
+
         x2 = self.resnet.layer2(x1)     # bs, 512, 44, 44
+        x2 = self.squeeze_excite2(x2)
 
         x3 = self.resnet.layer3(x2)     # bs, 1024, 22, 22
+        x3 = self.squeeze_excite3(x3)
+
         x4 = self.resnet.layer4(x3)     # bs, 2048, 11, 11
+        x4 = self.squeeze_excite4(x4)
+
         x2_rfb = self.rfb2_1(x2)        # channel -> 32
         x3_rfb = self.rfb3_1(x3)        # channel -> 32
         x4_rfb = self.rfb4_1(x4)        # channel -> 32
+        x4_rfb = self.aspp_bridge(x4_rfb)
 
         ra5_feat = self.agg1(x4_rfb, x3_rfb, x2_rfb)
         lateral_map_5 = F.interpolate(ra5_feat, scale_factor=8, mode='bilinear')    # NOTES: Sup-1 (bs, 1, 44, 44) -> (bs, 1, 352, 352)
@@ -179,6 +196,7 @@ class PraNet(nn.Module):
         x = ra2_feat + crop_2
         lateral_map_2 = F.interpolate(x, scale_factor=8, mode='bilinear')   # NOTES: Sup-4 (bs, 1, 44, 44) -> (bs, 1, 352, 352)
 
+        # 返回四个与原始图片相同大小的map
         return lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2
 
 

@@ -8,9 +8,9 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-from networks import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, ResUnetPlusPlus, PraNet
+from networks import UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, ResUnetPlusPlus, PraNet, PraNet_plus_plus
 from utils.data_vis import plot_img_and_mask
-from utils.dataset import BasicDataset
+from utils.dataset import PolypDataset
 
 
 def predict_img(net,
@@ -21,14 +21,14 @@ def predict_img(net,
                 out_threshold=0.5):
     net.eval()
 
-    img = torch.from_numpy(BasicDataset.preprocess(full_img, scale_factor))
-
+    img = PolypDataset.preprocess(full_img)
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        if network_name == 'PraNet':
+        if network_name == 'PraNet_plus' or network_name == 'PraNet_plus_plus':
             output4, output3, output2, output = net(img)
+            # Sg, R5, S5, R4, S4, R3, S3, output = net(img)
         else:
             output = net(img)
 
@@ -36,13 +36,11 @@ def predict_img(net,
             probs = F.softmax(output, dim=1)
         else:
             probs = torch.sigmoid(output)
-
         probs = probs.squeeze(0)
 
         tf = transforms.Compose(
             [
                 transforms.ToPILImage(),
-                transforms.Resize(full_img.size[1]),
                 transforms.ToTensor()
             ]
         )
@@ -50,22 +48,27 @@ def predict_img(net,
         probs = tf(probs.cpu())
         full_mask = probs.squeeze().cpu().numpy()
 
+        # PraNet中对输出结果的Mask的处理，res = full_mask
+        # res = F.upsample(res, size=gt.shape, mode='bilinear', align_corners=False)
+        # res = res.sigmoid().data.cpu().numpy().squeeze()
+        # res = (res - res.min()) / (res.max() - res.min() + 1e-8)
+        # imageio.imwrite(save_path+name, res)
     return full_mask > out_threshold
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--model', '-m', default='./param_initial/PraNet-29.pth',
+    parser.add_argument('--model', '-m', default='experiment/PraNet_plus_plus_init0.90.pth',
                         metavar='FILE',
                         help="Specify the file in which the model is stored")
-    parser.add_argument('-n', '--network', metavar='N', type=str, default="PraNet",
-                        help='choice of network: UNet, U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, '
-                             'ResUnetPlusPlus, PraNet', dest='network')
+    parser.add_argument('-n', '--network', metavar='N', type=str, default="PraNet_plus_plus",
+                        help='choice of network:  U_Net, R2U_Net, AttU_Net, R2AttU_Net, NestedUNet, '
+                             'ResUnetPlusPlus, PraNet_plus, PraNet_plus_plus', dest='network')
 
-    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pred/604.png',
+    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pred/507.png',
                         help='filenames of input images')
-    parser.add_argument('--output', '-o', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pred/604_PraNet.png',
+    parser.add_argument('--output', '-o', metavar='INPUT', nargs='+', default='./data/CVCpolyp/pout/507.png',
                         help='Filenames of ouput images')
 
     parser.add_argument('--viz', '-v', action='store_true',
@@ -73,13 +76,13 @@ def get_args():
                         default=True)
     parser.add_argument('--no-save', '-ns', action='store_true',
                         help="Do not save the output masks",
-                        default=False)
+                        default=True)
     parser.add_argument('--mask-threshold', '-t', type=float,
                         help="Minimum probability value to consider a mask pixel white",
                         default=0.5)
     parser.add_argument('--scale', '-s', type=float,
                         help="Scale factor for the input images",
-                        default=0.5)
+                        default=0.1)
 
     return parser.parse_args()
 
@@ -110,7 +113,7 @@ if __name__ == "__main__":
     in_files = [args.input]
     out_files = get_output_filenames(args)
 
-    if args.network == 'U_net':
+    if args.network == 'U_Net':
         # net = UNet(n_channels=3, n_classes=1, bilinear=False)
         net = U_Net(n_channels=3, n_classes=1, bilinear=False)
     if args.network == 'R2U_Net':
@@ -123,8 +126,10 @@ if __name__ == "__main__":
         net = NestedUNet(n_channels=3, n_classes=1, bilinear=False)
     if args.network == 'ResUnetPlusPlus':
         net = ResUnetPlusPlus(n_channels=3, n_classes=1, bilinear=False)
-    if args.network == 'PraNet':
+    if args.network == 'PraNet_plus':
         net = PraNet(n_channels=3, n_classes=1, bilinear=False)
+    if args.network == 'PraNet_plus_plus':
+        net = PraNet_plus_plus(n_channels=3, n_classes=1, bilinear=False)
 
     logging.info("Loading model {}".format(args.model))
 
@@ -138,8 +143,9 @@ if __name__ == "__main__":
     for i, fn in enumerate(in_files):
         logging.info("\nPredicting image {} ...".format(fn))
 
-        img = Image.open(fn)
+        img = fn
 
+        # 获取到的mask已经是true false级别的
         mask = predict_img(net=net,
                            network_name=args.network,
                            full_img=img,
@@ -149,11 +155,13 @@ if __name__ == "__main__":
 
         if not args.no_save:
             out_fn = out_files[i]
-            result = mask_to_image(mask)
+            result = mask_to_image(mask)  # result保存为Image格式
             result.save(out_files[i])
+            # PraNet中保存
+            # mageio.imwrite(save_path+name, res)
 
             logging.info("Mask saved to {}".format(out_files[i]))
 
         if args.viz:
             logging.info("Visualizing results for image {}, close to continue ...".format(fn))
-            plot_img_and_mask(img, mask)
+            plot_img_and_mask(Image.open(img), mask)

@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from PIL import Image
 from thop import profile
 from thop import clever_format
 import torch.nn as nn
@@ -45,7 +46,7 @@ class AvgMeter(object):
         self.losses.append(val)
 
     def show(self):
-        return torch.mean(torch.stack(self.losses[np.maximum(len(self.losses)-self.num, 0):]))
+        return torch.mean(torch.stack(self.losses[np.maximum(len(self.losses) - self.num, 0):]))
 
 
 def CalParams(model, input_tensor):
@@ -64,6 +65,12 @@ def CalParams(model, input_tensor):
     print('[Statistics Information]\nFLOPs: {}\nParams: {}'.format(flops, params))
 
 
+def test_loader(path):
+    with open(path, 'rb') as f:
+        img = Image.open(f)
+        return img.convert('RGB')
+
+
 class Structure_loss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -78,3 +85,22 @@ class Structure_loss(nn.Module):
         union = ((pred + mask) * weit).sum(dim=(2, 3))
         wiou = 1 - (inter + 1) / (union - inter + 1)
         return (wbce + wiou).mean()
+
+
+class DiceLoss(nn.Module):
+    def __init__(self):
+        super(DiceLoss, self).__init__()
+
+    def forward(self, input, target):
+        N = target.size(0)
+        smooth = 1
+
+        input_flat = input.view(N, -1)
+        target_flat = target.view(N, -1)
+
+        intersection = input_flat * target_flat
+
+        loss = 2 * (intersection.sum(1) + smooth) / (input_flat.sum(1) + target_flat.sum(1) + smooth)
+        loss = 1 - loss.sum() / N
+
+        return loss

@@ -5,8 +5,12 @@
       <paths name="serverDC">
         <serverdata>
           <mappings>
-            <mapping deploy="/UNet" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/MySegmentation" local="$PROJECT_DIR$" web="/" />
           </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/checkpoints_blood_vessel" />
+            <excludedPath local="true" path="$PROJECT_DIR$/checkpoints_cars" />
+          </excludedPaths>
         </serverdata>
       </paths>
     </serverData>
